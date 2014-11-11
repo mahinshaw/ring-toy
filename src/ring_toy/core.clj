@@ -6,6 +6,8 @@
             [ring.middleware.params :as params]
             [ring.middleware.cookies :as cookies]
             [ring.middleware.session :as session]
+            [ring.middleware.session.cookie :as scookie]
+            [ring.middleware.session.memory :as mem]
             [ring.middleware.flash :as flash]
             [clojure.string :as str]
             [clojure.pprint :as pp]))
@@ -19,11 +21,21 @@
   ([href] (str "<a href=\"" href "\">" href "</a>"))
   ([href title] (str "<a href=\"" href "\">" title "</a>")))
 
-(defn html-escape [string]
-  (str/escape string {\< "&lt;", \> "&gt;"}))
+(defn header1 [header]
+  (str "<h1>" header "</h1>"))
 
-(defn html-preformatted-escape [string]
+(defn header-and-link [header href title]
+  (str (header1 header) " " (link href title)))
+
+(defn html-escape [string]
+  (str/escape string {\< "&lt;", \" "&quot;", \& "&amp;", \> "&gt;"}))
+
+(defn html-pre-escape [string]
   (str "<pre>" (html-escape string) "</pre>"))
+
+(defn hppp[s] (html-pre-escape (with-out-str (binding [pp/*print-right-margin* 120] (pp/pprint s)))))
+(defn hpp[s] (html-pre-escape (str s)))
+(defn hp[s] (html-escape (str s)))
 
 (defn format-request [name request]
   (let [r1 (reduce dissoc request kill-keys)
@@ -47,23 +59,10 @@
       (let [response (handler request)]
         (let [outgoing (format-request (str spyname ":\n Outgoing Response Map:") response)]
           (println outgoing)
-          (update-in response [:body] (fn [x] (str (html-preformatted-escape incoming) x (html-preformatted-escape outgoing)))))))))
+          (if (= (type (response :body)) java.lang.String)
+            (update-in response [:body] (fn [x] (str (html-pre-escape incoming) x (html-pre-escape outgoing))))
+            response))))))
 
-;; fancy hander!
-;; (defn handler [request]
-;;   ;; Handlin' requests!
-;;   (case (req/request-url request)
-;;     "/favicon.ico" {:status 404
-;;                     :body (str (link "/" "Go Home!"))
-;;                     :session (update-in (request :session) [:favicon] (fnil inc 0))}
-;;     "/" {:body (str "<h1>home " (request :flash) "</h1>"
-;;                     "<p> favicon requests: " (get-in request [:session :favicon] 0)
-;;                     "<p> bother requests: " (get-in request [:session :bother] 0)
-;;                     "<p>" (link "/bother")
-;;                     "<p>" (link "/"))}
-;;     "/bother" {:status 302, :headers {"location" "/"}, :body ""
-;;                :flash "(bothered)"
-;;                :session (update-in (request :session) [:bother] (fnil inc 0))}))
 (defn status-response [code body]
   {:status code
    :headers {"Content-Type" "text/html"}
@@ -71,53 +70,104 @@
 
 (def ok-response (partial status-response 200))
 
-(def goodness (atom 0))
-(def evilness (atom 0))
-
 (defn good [request]
   (let [good (get-in request [:session :good] 0)]
-    (swap! goodness inc)
-    (assoc (resp/redirect "/")
-      :flash :good
+    (assoc (ok-response (header-and-link "Good" "/" "Choose Again"))
       :session (assoc (request :session) :good (inc good)))))
 
 (defn evil [request]
   (let [evil (get-in request [:session :evil] 0)]
-    (swap! evilness inc)
-    (assoc (resp/redirect "/")
-      :flash :evil
+    (assoc (ok-response (header-and-link "Evil" "/" "Choose Again"))
       :session (assoc (request :session) :evil (inc evil)))))
 
 (defn home [request]
-  (let [f (request :flash)
-        good (get-in request [:session :good] 0)
-        evil (get-in request [:session :evil] 0)]
-    (response (str "<h1>The Moral Maze</h1>"
-                   "Good " good " : Evil " evil "<p>"
-                   (if f
-                     (str "You last chose " (if (= f :evil) "Evil" "Good") ".<p> What do you choose now: ")
-                     "What do you choose: ")
-                   (str (link "/good" "Good") " or " (link "/evil" "Evil") "?")
-                   "<p> Global Good: " @goodness " Evil: " @evilness))))
+  (let [good (get-in request [:session :good] 0)
+        evil (get-in request [:session :evil] 0)
+        name (get-in request [:session :name] "The Anonymous User")]
+    (ok-response (str (header1 "The Moral Maze")
+                      "<p>Welcomes: <b>" name "</b>"
+                      "<p>Good " good " : Evil " evil "<p>"
+                      "<p> What do you choose: "
+                      (str (link "/good" "Good") " or " (link "/evil" "Evil") "?")
+                      (str "<p><hr/>" (link "/database" "Database") " or " (link "/highscores" "Highscores"))))))
 
-(defn handler [request]
-  (case (request :uri)
-    "/" (home request)
-    "/good" (good request)
-    "/evil" (evil request)
-    "/favicon.ico" {:flash (request :flash)}
-    (status-response 404 (str "<h1> 404 Where are you? " (request :uri) "</h1>"))))
+(defn namechange [request]
+  (ok-response (str "<form name=\"form\" method=\"post\" action=\"/change-my-name\">"
+                    "<input name=\"newname\" value=\"" ((request :session) :name "type name here") "\">")))
+
+(defn change-my-name [request]
+  (let [newname ((request :params) "newname")]
+    (assoc (ok-response (str "ok " newname "<p>" (link "/" "back")))
+      :session (assoc (request :session) :name newname))))
+
+(defn get-anon []
+  (str "anonuser" (. java.util.UUID randomUUID)))
+
+;; (defn handler [request]
+;;   (case (request :uri)
+;;     "/" (home request)
+;;     "/good" (good request)
+;;     "/evil" (evil request)
+;;     (status-response 404 (str "<h1> 404 Where are you? " (request :uri) "</h1>"))))
+
+(defn old-handler [request]
+  (if-let [userid ((request :session) :_userid)]
+    (do
+      (println "request-from: " userid)
+      (subhandler (assoc request :userid userid)))
+    (let [userid (get-anon)]
+      (println "assigning new id: " userid)
+      (let [oldsession (request :session)]
+        (let [response (subhandler (assoc request :userid userid))]
+          (if-let [newsession (response :session)]
+            (assoc response :session (assoc newsession :_userid userid))
+            (assoc response :session (assoc oldsession :_userid userid))))))))
+
+(defmacro routefn [& addresses]
+  `(fn [~'request]
+     (case (~'request :uri)
+       ~@(mapcat (fn [x] [(str "/" x) (list x 'request)]) addresses)
+       "/" (home ~'request)
+       (status-response 404 (str "<h1> 404 Where are you? " (:uri ~'request) "</h1>")))))
+
+(defonce db (atom {}))
+
+(defn database [request]
+  (ok-response
+   (str (header1 "Database")
+        "<pre>" "(swap! db (fn [x] (merge x " (hppp @db) ")))" "</pre>")))
+
+(defn highscores [request]
+  (let [score (fn [[k v]]
+                (let [e (v :evil 0)
+                      g (v :good 0)
+                      n (v :name "anon")
+                      r (if (zero? (+ e g)) 1/2 (/ e (+ e g)))]
+                  [r n k g e]))
+        hst (sort (map score @db))]
+    (response (str
+               (header1 "High Score Table")
+               "<table>"
+               (str "<tr>" "<td>" "User ID" "<th/>" "<th>" "Chose Good" "<th/>" "<th>" "Chose Evil" "<th/>" "</tr>")
+               (apply str (for [i hst] (str "<tr>" "<td>" (hp (i 1)) "<td/>" "<td>" (hp (i 2)) "<td/>" "<td>" (hp (i 3)) "<td/>" "</tr>")))
+               "</table>"))))
+
+(def handler (routefn good evil database highscores namechange change-my-name))
 
 (def app
   (-> #'handler
       (trace/wrap-stacktrace)
-      (wrap-spy "What the Handler sees.")
-      (flash/wrap-flash)
-      (wrap-spy "What the Flash Middleware sees.")
-      (session/wrap-session)
-      (cookies/wrap-cookies)
+      (wrap-spy "Handler.")
       (params/wrap-params)
-      (wrap-spy "What the Webserver sees.")
+      ;; (flash/wrap-flash)
+      ;; (wrap-spy "What the Flash Middleware sees.")
+      (session/wrap-session {:store (mem/memory-store db)})
+      ;; (cookies/wrap-cookies)
+      ;; (wrap-spy "What the Webserver sees.")
       (trace/wrap-stacktrace)))
 
 (defonce server (jetty/run-jetty #'app {:port 8080 :join? false}))
+
+(defn sprocess [session uri]
+  (let [ns (:session (handler {:uri uri :session session}))]
+    (if (nil? ns) session ns)))
