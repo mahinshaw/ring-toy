@@ -1,3 +1,7 @@
+;; www.learnclojure.com/2013/01 ring tutorials.
+;; this class represents the final product (the last of his tutorial)
+;; It was helpful in understanding all the things that go on in a web app.
+
 (ns ring-toy.core
   (:require [ring.adapter.jetty :as jetty]
             [ring.util.request :as req]
@@ -37,6 +41,10 @@
 (defn hpp[s] (html-pre-escape (str s)))
 (defn hp[s] (html-escape (str s)))
 
+;; Remove some of the less interesting keys in teh map.
+(def kill-keys [:body :character-encoding :remote-addr :server-name :server-port :ssl-client-cert :scheme :content-type :content-length])
+(def kill-headers ["user-agent" "accept" "accept-encoding" "accept-language" "accept-charset" "cache-control" "connection"])
+
 (defn format-request [name request]
   (let [r1 (reduce dissoc request kill-keys)
         r (reduce (fn [h n] (update-in h [:headers] dissoc n)) r1 kill-headers)]
@@ -46,10 +54,6 @@
       (println "---------------------------------")
       (pp/pprint r)
       (println "---------------------------------"))))
-
-;; Remove some of the less interesting keys in teh map.
-(def kill-keys [:body :character-encoding :remote-addr :server-name :server-port :ssl-client-cert :scheme :content-type :content-length])
-(def kill-headers ["user-agent" "accept" "accept-encoding" "accept-language" "accept-charset" "cache-control" "connection"])
 
 (defn wrap-spy [handler spyname]
   ;; Print the request and response.
@@ -86,7 +90,9 @@
         name (get-in request [:session :name] "The Anonymous User")]
     (ok-response (str (header1 "The Moral Maze")
                       "<p>Welcomes: <b>" name "</b>"
-                      "<p>Good " good " : Evil " evil "<p>"
+                      (str " (" (link "/namechange" "Change") ")")
+                      (str "<p> (" (link "/change-identity" (str "Not " name "? Log in as someone else.")))
+                      "<p>Good " good " : Evil " evil
                       "<p> What do you choose: "
                       (str (link "/good" "Good") " or " (link "/evil" "Evil") "?")
                       (str "<p><hr/>" (link "/database" "Database") " or " (link "/highscores" "Highscores"))))))
@@ -100,6 +106,18 @@
     (assoc (ok-response (str "ok " newname "<p>" (link "/" "back")))
       :session (assoc (request :session) :name newname))))
 
+(defn change-my-identity [request]
+  (let [newid ((request :params) "newidentity")]
+    (if-let [newsessioncookie (ffirst (filter (fn [[k v]] (= (v :name) newid)) @db))]
+      (assoc (ok-response (str "if you say so...<i>" newid "</i><p>" (link "/" "Home")))
+        :cookies {"ring-session" {:value newsessioncookie}})
+      (ok-response "<span style=\"color:red\"><b><i>I Think Not!</i></b></span>"))))
+
+(defn change-identity [request]
+  (ok-response (str "<form name=\"form\" method=\"post\" action=\"/change-my-identity\">"
+                 "If you ain't " ((request :session) :name "dat geezer") " den who <i>are</i> you? :"
+                 "<input name=\"newidentity\" value=\"" ((request :session) :name "type name here") "\">")))
+
 (defn get-anon []
   (str "anonuser" (. java.util.UUID randomUUID)))
 
@@ -110,18 +128,18 @@
 ;;     "/evil" (evil request)
 ;;     (status-response 404 (str "<h1> 404 Where are you? " (request :uri) "</h1>"))))
 
-(defn old-handler [request]
-  (if-let [userid ((request :session) :_userid)]
-    (do
-      (println "request-from: " userid)
-      (subhandler (assoc request :userid userid)))
-    (let [userid (get-anon)]
-      (println "assigning new id: " userid)
-      (let [oldsession (request :session)]
-        (let [response (subhandler (assoc request :userid userid))]
-          (if-let [newsession (response :session)]
-            (assoc response :session (assoc newsession :_userid userid))
-            (assoc response :session (assoc oldsession :_userid userid))))))))
+;; (defn old-handler [request]
+;;   (if-let [userid ((request :session) :_userid)]
+;;     (do
+;;       (println "request-from: " userid)
+;;       (subhandler (assoc request :userid userid)))
+;;     (let [userid (get-anon)]
+;;       (println "assigning new id: " userid)
+;;       (let [oldsession (request :session)]
+;;         (let [response (subhandler (assoc request :userid userid))]
+;;           (if-let [newsession (response :session)]
+;;             (assoc response :session (assoc newsession :_userid userid))
+;;             (assoc response :session (assoc oldsession :_userid userid))))))))
 
 (defmacro routefn [& addresses]
   `(fn [~'request]
@@ -145,14 +163,14 @@
                       r (if (zero? (+ e g)) 1/2 (/ e (+ e g)))]
                   [r n k g e]))
         hst (sort (map score @db))]
-    (response (str
-               (header1 "High Score Table")
-               "<table>"
-               (str "<tr>" "<td>" "User ID" "<th/>" "<th>" "Chose Good" "<th/>" "<th>" "Chose Evil" "<th/>" "</tr>")
-               (apply str (for [i hst] (str "<tr>" "<td>" (hp (i 1)) "<td/>" "<td>" (hp (i 2)) "<td/>" "<td>" (hp (i 3)) "<td/>" "</tr>")))
-               "</table>"))))
+    (ok-response (str
+                  (header1 "High Score Table")
+                  "<table>"
+                  (str "<tr>" "<td>" "User ID" "<th/>" "<th>" "Chose Good" "<th/>" "<th>" "Chose Evil" "<th/>" "</tr>")
+                  (apply str (for [i hst] (str "<tr>" "<td>" (hp (i 1)) "<td/>" "<td>" (hp (i 2)) "<td/>" "<td>" (hp (i 3)) "<td/>" "</tr>")))
+                  "</table>"))))
 
-(def handler (routefn good evil database highscores namechange change-my-name))
+(def handler (routefn good evil database highscores namechange change-my-name change-my-identity change-identity))
 
 (def app
   (-> #'handler
